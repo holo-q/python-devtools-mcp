@@ -1,0 +1,31 @@
+[project]
+name = "python-devtools"
+version = "0.2.0"
+description = "Live runtime inspection for any Python app — MCP-powered devtools"
+requires-python = ">=3.12"
+# Base package has zero deps — pure stdlib TCP server embeds in your app
+dependencies = []
+
+[project.optional-dependencies]
+# MCP CLI bridge (Claude Code / LLM agent connectivity)
+cli = ["mcp>=1.0"]
+
+[project.scripts]
+python-devtools = "python_devtools._cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/python_devtools"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "single"
