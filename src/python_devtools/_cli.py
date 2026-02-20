@@ -30,6 +30,7 @@ import argparse
 import json
 import socket
 import sys
+import time
 
 # 10 MB — guard against runaway responses filling memory
 _MAX_BUF = 10 * 1024 * 1024
@@ -53,10 +54,27 @@ class _DevToolsClient:
         self._id = 0
         self._buf = b''
 
+    @property
+    def connected(self) -> bool:
+        return self._sock is not None
+
     def connect(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.connect((self._host, self._port))
         self._sock.settimeout(self._timeout)
+
+    def ensure_connected(self) -> None:
+        """Connect if not already connected. Retries with backoff."""
+        if self._sock is not None:
+            return
+        for attempt in range(30):  # ~30s total
+            try:
+                self.connect()
+                return
+            except (ConnectionRefusedError, OSError):
+                if attempt < 29:
+                    time.sleep(1)
+        raise ConnectionRefusedError(f'Cannot connect to {self._host}:{self._port} after 30 attempts')
 
     def close(self) -> None:
         if self._sock:
@@ -64,8 +82,8 @@ class _DevToolsClient:
             self._sock = None
 
     def request(self, method: str, **params):
-        """Send a request, return the result. Raises on error."""
-        assert self._sock is not None, 'Not connected'
+        """Send a request, return the result. Lazy-connects on first call."""
+        self.ensure_connected()
         self._id += 1
         msg = json.dumps({'id': self._id, 'method': method, 'params': params})
         self._sock.sendall(msg.encode() + b'\n')
@@ -97,16 +115,9 @@ def main():
     parser.add_argument('--timeout', type=float, default=30.0, help='Socket timeout in seconds (default: 30)')
     args = parser.parse_args()
 
-    # Connect to the app
+    # Lazy connect — app may not be running yet, bridge waits on first tool call
     client = _DevToolsClient(args.host, args.port, timeout=args.timeout)
-    try:
-        client.connect()
-    except ConnectionRefusedError:
-        print(f'error: cannot connect to {args.host}:{args.port} — is the app running with --devtools?', file=sys.stderr)
-        sys.exit(1)
-
-    # Warning banner — stderr so it doesn't pollute MCP stdio
-    print(f'python-devtools: connected to {args.host}:{args.port} (LOCAL_TRUSTED mode)', file=sys.stderr)
+    print(f'python-devtools: bridge ready, will connect to {args.host}:{args.port} on first tool call', file=sys.stderr)
     if args.readonly:
         print('python-devtools: readonly mode — mutation tools not registered', file=sys.stderr)
     else:
