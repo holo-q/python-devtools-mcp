@@ -37,9 +37,9 @@ _MAX_BUF = 10 * 1024 * 1024
 
 
 def _fmt(result) -> str:
-    """Format result for MCP — dicts get pretty-printed, strings pass through."""
+    """Format result for MCP — compact JSON to avoid \\n noise in MCP protocol."""
     if isinstance(result, dict):
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(result, default=str)
     return str(result)
 
 
