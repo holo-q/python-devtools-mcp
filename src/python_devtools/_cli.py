@@ -1,5 +1,14 @@
 """
-CLI entry point — MCP stdio server that bridges to the app's devtools TCP port.
+CLI entry point — two modes:
+
+1. MCP bridge (default):
+    python-devtools --port 9229
+    Runs an MCP stdio server that bridges to the app's devtools TCP port.
+
+2. Wrapper mode (with --):
+    python-devtools [--port PORT] [--readonly] -- <command>
+    Injects devtools into a child Python process via sitecustomize.py.
+    The child gets a devtools TCP server automatically — no code changes needed.
 
 Claude Code configuration:
     {
@@ -20,8 +29,6 @@ Readonly mode (no eval/exec — only inspect/source/state/ping):
             }
         }
     }
-
-Or run directly: python-devtools --port 9229
 """
 
 from __future__ import annotations
@@ -105,6 +112,14 @@ class _DevToolsClient:
 
 
 def main():
+    # ── Split argv at '--' to detect wrapper mode ──
+    argv = sys.argv[1:]
+    command: list[str] | None = None
+    if '--' in argv:
+        idx = argv.index('--')
+        command = argv[idx + 1:]
+        argv = argv[:idx]
+
     parser = argparse.ArgumentParser(
         prog='python-devtools',
         description='MCP bridge to a running Python app with devtools enabled',
@@ -113,9 +128,15 @@ def main():
     parser.add_argument('--host', type=str, default='localhost', help='DevTools host (default: localhost)')
     parser.add_argument('--readonly', action='store_true', help='Disable mutation tools (run/eval)')
     parser.add_argument('--timeout', type=float, default=30.0, help='Socket timeout in seconds (default: 30)')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    # Lazy connect — app may not be running yet, bridge waits on first tool call
+    # ── Wrapper mode: inject devtools into child and exec ──
+    if command is not None:
+        from python_devtools._wrap import wrap
+        wrap(command, port=args.port, readonly=args.readonly)
+        return  # execvpe never returns — this is just for clarity
+
+    # ── MCP bridge mode ──
     client = _DevToolsClient(args.host, args.port, timeout=args.timeout)
     print(f'python-devtools: bridge ready, will connect to {args.host}:{args.port} on first tool call', file=sys.stderr)
     if args.readonly:

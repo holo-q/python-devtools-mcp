@@ -26,7 +26,7 @@ Query state, eval expressions, inspect objects, read source — all while the ap
 
 <br>
 
-[Install](#install) · [Quick Start](#quick-start) · [Tools](#tools) · [Threading](#threading-safety) · [Security](#security)
+[Install](#install) · [Quick Start](#quick-start) · [Wrapper Mode](#wrapper-mode) · [Tools](#tools) · [Threading](#threading-safety) · [Security](#security)
 
 </div>
 
@@ -94,6 +94,64 @@ Claude can now reach into your running app:
 
 > source("type(app.users[0]).validate")
 → def validate(self): ...
+```
+
+---
+
+## Wrapper Mode
+
+Don't want to modify your app's source? Wrap it:
+
+```bash
+python-devtools -- uv run myapp.py
+python-devtools -- python app.py
+python-devtools --port 9230 -- flask run
+```
+
+This injects a devtools server into the child process via `sitecustomize.py` — **no code changes needed**. The child gets a TCP server on startup, and `__main__` is auto-registered as `main`:
+
+```
+> run("dir(main)")
+→ ['__builtins__', '__file__', 'app', 'config', 'db', ...]
+
+> run("main.app.config['DEBUG']")
+→ True
+```
+
+<details>
+<summary><b>How it works</b></summary>
+<br>
+
+The wrapper prepends a generated `sitecustomize.py` to `PYTHONPATH`. When the child Python interpreter starts, `site.py` imports it, which:
+
+1. **Chains** to any existing `sitecustomize.py` (removes inject dir from path, imports original, restores)
+2. **Starts** the devtools TCP server on the configured port
+3. **Registers** `__main__` — the module ref is captured early but populated later with the script's globals
+
+The `python_devtools` package is also added to `PYTHONPATH`, so it doesn't need to be installed in the child's environment.
+
+Non-Python children (e.g., `python-devtools -- node app.js`) are harmless — the env vars are set but nothing reads them.
+
+</details>
+
+<br>
+
+Pair with the MCP bridge for Claude Code access:
+
+```bash
+# Terminal 1: run your app with devtools injected
+python-devtools -- uv run myapp.py
+
+# Claude Code config: MCP bridge connects to the injected server
+# .claude/settings.json
+{
+  "mcpServers": {
+    "python-devtools": {
+      "command": "python-devtools",
+      "args": ["--port", "9229"]
+    }
+  }
+}
 ```
 
 ---
@@ -260,7 +318,8 @@ python-devtools/
 ├── _core.py         # DevTools orchestrator — lifecycle, argparse
 ├── _server.py       # TCP JSON-lines server — accept, dispatch, threading
 ├── _resolve.py      # Object resolution — inspect, eval, serialize
-└── _cli.py          # MCP stdio bridge — TCP client ↔ MCP tools
+├── _cli.py          # MCP stdio bridge + wrapper dispatch
+└── _wrap.py         # Wrapper mode — sitecustomize.py injection
 ```
 
 The **app side** (`__init__`, `_core`, `_server`, `_resolve`) is pure stdlib — zero dependencies.
