@@ -51,7 +51,18 @@ def _fmt(result) -> str:
 
 
 class _DevToolsClient:
-    """TCP client connecting to the app's devtools server."""
+    """
+    TCP client connecting to the app's devtools server.
+
+    Reconnection strategy:
+        - Lazy connect on first request (app may not be running yet)
+        - On any socket error during request: tear down, reconnect, retry once
+        - On reconnect: flush stale buffer, create fresh socket
+        - If the app restarts (new TCP server), the bridge auto-recovers
+    """
+
+    # Errors that indicate a dead/broken connection worth retrying
+    _CONN_ERRORS = (ConnectionError, ConnectionResetError, BrokenPipeError, TimeoutError, OSError)
 
     def __init__(self, host: str, port: int, timeout: float = 30.0):
         self._host = host
@@ -65,39 +76,48 @@ class _DevToolsClient:
     def connected(self) -> bool:
         return self._sock is not None
 
-    def connect(self) -> None:
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._sock.connect((self._host, self._port))
-        self._sock.settimeout(self._timeout)
+    def _connect_once(self) -> None:
+        """Open a fresh TCP connection. Raises on failure."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(self._timeout)
+        sock.connect((self._host, self._port))
+        self._sock = sock
+        self._buf = b''  # Flush stale buffer from previous connection
 
-    def ensure_connected(self) -> None:
-        """Connect if not already connected. Retries with backoff."""
+    def _disconnect(self) -> None:
+        """Tear down current connection, if any."""
         if self._sock is not None:
-            return
-        for attempt in range(30):  # ~30s total
             try:
-                self.connect()
-                return
-            except (ConnectionRefusedError, OSError):
-                if attempt < 29:
-                    time.sleep(1)
-        raise ConnectionRefusedError(f'Cannot connect to {self._host}:{self._port} after 30 attempts')
-
-    def close(self) -> None:
-        if self._sock:
-            self._sock.close()
+                self._sock.close()
+            except OSError:
+                pass
             self._sock = None
+            self._buf = b''
 
-    def request(self, method: str, **params):
-        """Send a request, return the result. Lazy-connects on first call."""
-        self.ensure_connected()
-        self._id += 1
-        msg = json.dumps({'id': self._id, 'method': method, 'params': params})
-        self._sock.sendall(msg.encode() + b'\n')
+    def _connect_with_retry(self, max_attempts: int = 30) -> None:
+        """Connect with retry loop. ~1s between attempts."""
+        for attempt in range(max_attempts):
+            try:
+                self._connect_once()
+                return
+            except self._CONN_ERRORS:
+                if attempt < max_attempts - 1:
+                    time.sleep(1)
+        raise ConnectionRefusedError(
+            f'Cannot connect to {self._host}:{self._port} after {max_attempts} attempts'
+        )
 
-        # Read response line
+    def _ensure_connected(self) -> None:
+        """Connect if not already connected."""
+        if self._sock is None:
+            self._connect_with_retry()
+
+    def _send_and_recv(self, msg: str) -> dict:
+        """Send a JSON-lines message and read one response line. Raises on I/O failure."""
+        self._sock.sendall(msg.encode() + b'\n')  # type: ignore[union-attr]
+
         while b'\n' not in self._buf:
-            data = self._sock.recv(65536)
+            data = self._sock.recv(65536)  # type: ignore[union-attr]
             if not data:
                 raise ConnectionError('Server closed connection')
             self._buf += data
@@ -105,7 +125,32 @@ class _DevToolsClient:
                 raise RuntimeError('response too large')
 
         line, self._buf = self._buf.split(b'\n', 1)
-        resp = json.loads(line)
+        return json.loads(line)
+
+    def request(self, method: str, **params):
+        """
+        Send a request, return the result. Reconnects transparently on failure.
+
+        Strategy: try once → on connection error, tear down + reconnect + retry once.
+        This handles: app restarts, idle TCP drops, half-open sockets.
+        """
+        self._ensure_connected()
+        self._id += 1
+        msg = json.dumps({'id': self._id, 'method': method, 'params': params})
+
+        try:
+            resp = self._send_and_recv(msg)
+        except self._CONN_ERRORS:
+            # Connection died — tear down, reconnect, retry with same message
+            print(f'python-devtools: connection lost, reconnecting to {self._host}:{self._port}...', file=sys.stderr)
+            self._disconnect()
+            self._connect_with_retry()
+            try:
+                resp = self._send_and_recv(msg)
+            except self._CONN_ERRORS as e:
+                self._disconnect()
+                raise ConnectionError(f'Reconnect failed: {e}') from e
+
         if 'error' in resp:
             raise RuntimeError(resp['error'])
         return resp['result']
