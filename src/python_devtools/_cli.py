@@ -54,23 +54,28 @@ class _DevToolsClient:
     """
     TCP client connecting to the app's devtools server.
 
-    Reconnection strategy:
-        - Lazy connect on first request (app may not be running yet)
-        - On any socket error during request: tear down, reconnect, retry once
+    Connection strategy — fail fast, recover transparently:
+        - Connect on first tool call, fail immediately if app isn't there
+        - On connection error during request: tear down, try once to reconnect
         - On reconnect: flush stale buffer, create fresh socket
-        - If the app restarts (new TCP server), the bridge auto-recovers
+        - Cooldown after failure — don't hammer a dead port on every tool call
     """
 
     # Errors that indicate a dead/broken connection worth retrying
     _CONN_ERRORS = (ConnectionError, ConnectionResetError, BrokenPipeError, TimeoutError, OSError)
 
-    def __init__(self, host: str, port: int, timeout: float = 30.0):
+    # After a connection failure, don't retry for this many seconds.
+    # Prevents every tool call from blocking when the app is down.
+    _COOLDOWN = 3.0
+
+    def __init__(self, host: str, port: int, timeout: float = 5.0):
         self._host = host
         self._port = port
         self._timeout = timeout
         self._sock: socket.socket | None = None
         self._id = 0
         self._buf = b''
+        self._last_fail: float = 0.0  # time.time() of last connection failure
 
     @property
     def connected(self) -> bool:
@@ -83,6 +88,7 @@ class _DevToolsClient:
         sock.connect((self._host, self._port))
         self._sock = sock
         self._buf = b''  # Flush stale buffer from previous connection
+        self._last_fail = 0.0  # Clear cooldown on success
 
     def _disconnect(self) -> None:
         """Tear down current connection, if any."""
@@ -94,23 +100,30 @@ class _DevToolsClient:
             self._sock = None
             self._buf = b''
 
-    def _connect_with_retry(self, max_attempts: int = 30) -> None:
-        """Connect with retry loop. ~1s between attempts."""
-        for attempt in range(max_attempts):
-            try:
-                self._connect_once()
-                return
-            except self._CONN_ERRORS:
-                if attempt < max_attempts - 1:
-                    time.sleep(1)
-        raise ConnectionRefusedError(
-            f'Cannot connect to {self._host}:{self._port} after {max_attempts} attempts'
-        )
+    def _fail(self) -> None:
+        """Record a connection failure for cooldown tracking."""
+        self._disconnect()
+        self._last_fail = time.time()
 
-    def _ensure_connected(self) -> None:
-        """Connect if not already connected."""
-        if self._sock is None:
-            self._connect_with_retry()
+    def _connect(self) -> None:
+        """
+        Connect if not connected. Fail fast — no retry loop.
+
+        Raises ConnectionRefusedError immediately if the app isn't listening.
+        Respects cooldown to avoid hammering a dead port on every tool call.
+        """
+        if self._sock is not None:
+            return
+        # Cooldown — if we just failed, don't retry yet
+        if self._last_fail and (time.time() - self._last_fail) < self._COOLDOWN:
+            raise ConnectionRefusedError(
+                f'App not reachable at {self._host}:{self._port} (retrying in {self._COOLDOWN}s)'
+            )
+        try:
+            self._connect_once()
+        except self._CONN_ERRORS:
+            self._fail()
+            raise ConnectionRefusedError(f'App not reachable at {self._host}:{self._port}')
 
     def _send_and_recv(self, msg: str) -> dict:
         """Send a JSON-lines message and read one response line. Raises on I/O failure."""
@@ -131,25 +144,26 @@ class _DevToolsClient:
         """
         Send a request, return the result. Reconnects transparently on failure.
 
-        Strategy: try once → on connection error, tear down + reconnect + retry once.
-        This handles: app restarts, idle TCP drops, half-open sockets.
+        Strategy: try once → on connection error, tear down + reconnect once.
+        Handles: app restarts, idle TCP drops, half-open sockets.
+        Fails fast when app is down — no 30-second retry loops.
         """
-        self._ensure_connected()
+        self._connect()
         self._id += 1
         msg = json.dumps({'id': self._id, 'method': method, 'params': params})
 
         try:
             resp = self._send_and_recv(msg)
         except self._CONN_ERRORS:
-            # Connection died — tear down, reconnect, retry with same message
-            print(f'python-devtools: connection lost, reconnecting to {self._host}:{self._port}...', file=sys.stderr)
+            # Connection died — tear down, reconnect once, retry same message
+            print(f'python-devtools: connection lost, reconnecting...', file=sys.stderr)
             self._disconnect()
-            self._connect_with_retry()
             try:
+                self._connect_once()
                 resp = self._send_and_recv(msg)
             except self._CONN_ERRORS as e:
-                self._disconnect()
-                raise ConnectionError(f'Reconnect failed: {e}') from e
+                self._fail()
+                raise ConnectionError(f'Reconnect to {self._host}:{self._port} failed: {e}') from e
 
         if 'error' in resp:
             raise RuntimeError(resp['error'])
@@ -172,7 +186,7 @@ def main():
     parser.add_argument('--port', type=int, default=9229, help='DevTools port (default: 9229)')
     parser.add_argument('--host', type=str, default='localhost', help='DevTools host (default: localhost)')
     parser.add_argument('--readonly', action='store_true', help='Disable mutation tools (run/eval)')
-    parser.add_argument('--timeout', type=float, default=30.0, help='Socket timeout in seconds (default: 30)')
+    parser.add_argument('--timeout', type=float, default=5.0, help='Socket timeout in seconds (default: 5)')
     args = parser.parse_args(argv)
 
     # ── Wrapper mode: inject devtools into child and exec ──
