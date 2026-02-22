@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import inspect
+import io
 import re
 import types
 from collections.abc import Mapping, Sequence, Set
@@ -37,49 +39,60 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
     defined in exec'd code are visible to functions defined in the same block.
     (With separate dicts, `exec(code, globs, locals)` puts names in locals,
     but nested functions only search globals — classic exec() gotcha.)
+
+    Stdout capture: all exec/eval runs with stdout redirected to a StringIO.
+    This captures print() output and — critically — prevents help() from
+    opening an interactive pager (StringIO.isatty() → False → no pager).
+    Captured output is included in the result dict as 'stdout'.
     """
     # Merged namespace: registered objects + builtins in one dict.
     # Copy so we don't pollute the registered namespaces with temporaries.
     ns: dict = {'__builtins__': __builtins__, **namespaces}
+    capture = io.StringIO()
 
-    # Fast path — single expression
-    try:
-        result = eval(code, ns)
-        return {
+    def _result(result: object, mode: str) -> dict:
+        out = capture.getvalue()
+        d: dict = {
             'result': repr(result),
             'type': type(result).__qualname__,
-            'mode': 'eval',
+            'mode': mode,
         }
-    except SyntaxError:
-        pass
+        if out:
+            d['stdout'] = out
+        return d
 
-    # Parse AST to check if last statement is an expression
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        return {'error': f'SyntaxError: {e}'}
+    with contextlib.redirect_stdout(capture):
+        # Fast path — single expression
+        try:
+            result = eval(code, ns)
+            return _result(result, 'eval')
+        except SyntaxError:
+            pass
 
-    # If the last statement is an expression (not assignment, import, etc.),
-    # exec everything before it, then eval the tail — return its value
-    if tree.body and isinstance(tree.body[-1], ast.Expr):
-        if len(tree.body) > 1:
-            setup = ast.Module(body=tree.body[:-1], type_ignores=[])
-            exec(compile(setup, '<devtools>', 'exec'), ns)
-        expr = ast.Expression(body=tree.body[-1].value)
-        result = eval(compile(expr, '<devtools>', 'eval'), ns)
-        return {
-            'result': repr(result),
-            'type': type(result).__qualname__,
-            'mode': 'eval',
-        }
+        # Parse AST to check if last statement is an expression
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return {'error': f'SyntaxError: {e}'}
 
-    # Pure statements — exec everything, return OK
-    exec(code, ns)
-    return {
-        'result': 'OK',
-        'type': 'NoneType',
-        'mode': 'exec',
-    }
+        # If the last statement is an expression (not assignment, import, etc.),
+        # exec everything before it, then eval the tail — return its value
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            if len(tree.body) > 1:
+                setup = ast.Module(body=tree.body[:-1], type_ignores=[])
+                exec(compile(setup, '<devtools>', 'exec'), ns)
+            expr = ast.Expression(body=tree.body[-1].value)
+            result = eval(compile(expr, '<devtools>', 'eval'), ns)
+            return _result(result, 'eval')
+
+        # Pure statements — exec everything, return OK
+        exec(code, ns)
+
+    out = capture.getvalue()
+    d: dict = {'result': 'OK', 'type': 'NoneType', 'mode': 'exec'}
+    if out:
+        d['stdout'] = out
+    return d
 
 
 def inspect_object(
