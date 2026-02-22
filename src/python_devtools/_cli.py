@@ -37,6 +37,7 @@ import argparse
 import json
 import socket
 import sys
+import threading
 import time
 
 # 10 MB — guard against runaway responses filling memory
@@ -76,6 +77,7 @@ class _DevToolsClient:
         self._id = 0
         self._buf = b''
         self._last_fail: float = 0.0  # time.time() of last connection failure
+        self._lock = threading.Lock()  # Serialize requests — socket I/O isn't thread-safe
 
     @property
     def connected(self) -> bool:
@@ -147,27 +149,29 @@ class _DevToolsClient:
         Strategy: try once → on connection error, tear down + reconnect once.
         Handles: app restarts, idle TCP drops, half-open sockets.
         Fails fast when app is down — no 30-second retry loops.
+        Thread-safe — serialized via lock (MCP may call tools concurrently).
         """
-        self._connect()
-        self._id += 1
-        msg = json.dumps({'id': self._id, 'method': method, 'params': params})
+        with self._lock:
+            self._connect()
+            self._id += 1
+            msg = json.dumps({'id': self._id, 'method': method, 'params': params})
 
-        try:
-            resp = self._send_and_recv(msg)
-        except self._CONN_ERRORS:
-            # Connection died — tear down, reconnect once, retry same message
-            print(f'python-devtools: connection lost, reconnecting...', file=sys.stderr)
-            self._disconnect()
             try:
-                self._connect_once()
                 resp = self._send_and_recv(msg)
-            except self._CONN_ERRORS as e:
-                self._fail()
-                raise ConnectionError(f'Reconnect to {self._host}:{self._port} failed: {e}') from e
+            except self._CONN_ERRORS:
+                # Connection died — tear down, reconnect once, retry same message
+                print('python-devtools: connection lost, reconnecting...', file=sys.stderr)
+                self._disconnect()
+                try:
+                    self._connect_once()
+                    resp = self._send_and_recv(msg)
+                except self._CONN_ERRORS as e:
+                    self._fail()
+                    raise ConnectionError(f'Reconnect to {self._host}:{self._port} failed: {e}') from e
 
-        if 'error' in resp:
-            raise RuntimeError(resp['error'])
-        return resp['result']
+            if 'error' in resp:
+                raise RuntimeError(resp['error'])
+            return resp['result']
 
 
 def main():
