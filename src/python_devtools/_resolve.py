@@ -32,12 +32,19 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
     Jupyter/IPython semantics: if the code contains multiple statements and
     the last one is an expression, exec the setup lines and eval the tail.
     This means `import foo; foo.bar()` returns bar()'s value instead of 'OK'.
+
+    Scoping: uses a SINGLE merged dict for globals+locals so that variables
+    defined in exec'd code are visible to functions defined in the same block.
+    (With separate dicts, `exec(code, globs, locals)` puts names in locals,
+    but nested functions only search globals — classic exec() gotcha.)
     """
-    globs: dict = {'__builtins__': __builtins__}
+    # Merged namespace: registered objects + builtins in one dict.
+    # Copy so we don't pollute the registered namespaces with temporaries.
+    ns: dict = {'__builtins__': __builtins__, **namespaces}
 
     # Fast path — single expression
     try:
-        result = eval(code, globs, namespaces)
+        result = eval(code, ns)
         return {
             'result': repr(result),
             'type': type(result).__qualname__,
@@ -57,9 +64,9 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
     if tree.body and isinstance(tree.body[-1], ast.Expr):
         if len(tree.body) > 1:
             setup = ast.Module(body=tree.body[:-1], type_ignores=[])
-            exec(compile(setup, '<devtools>', 'exec'), globs, namespaces)
+            exec(compile(setup, '<devtools>', 'exec'), ns)
         expr = ast.Expression(body=tree.body[-1].value)
-        result = eval(compile(expr, '<devtools>', 'eval'), globs, namespaces)
+        result = eval(compile(expr, '<devtools>', 'eval'), ns)
         return {
             'result': repr(result),
             'type': type(result).__qualname__,
@@ -67,7 +74,7 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
         }
 
     # Pure statements — exec everything, return OK
-    exec(code, globs, namespaces)
+    exec(code, ns)
     return {
         'result': 'OK',
         'type': 'NoneType',
