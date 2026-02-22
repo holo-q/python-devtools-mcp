@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import re
 import types
@@ -25,21 +26,53 @@ def resolve(path: str, namespaces: dict[str, object]) -> object:
 # ────────────────────────────────────────────────────────────────────────
 
 def run_code(code: str, namespaces: dict[str, object]) -> dict:
-    """Evaluate expression or execute statement. Returns structured result."""
+    """
+    Evaluate expression or execute statement(s). Returns structured result.
+
+    Jupyter/IPython semantics: if the code contains multiple statements and
+    the last one is an expression, exec the setup lines and eval the tail.
+    This means `import foo; foo.bar()` returns bar()'s value instead of 'OK'.
+    """
+    globs: dict = {'__builtins__': __builtins__}
+
+    # Fast path — single expression
     try:
-        result = eval(code, {'__builtins__': __builtins__}, namespaces)
+        result = eval(code, globs, namespaces)
         return {
             'result': repr(result),
             'type': type(result).__qualname__,
             'mode': 'eval',
         }
     except SyntaxError:
-        exec(code, {'__builtins__': __builtins__}, namespaces)
+        pass
+
+    # Parse AST to check if last statement is an expression
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return {'error': f'SyntaxError: {e}'}
+
+    # If the last statement is an expression (not assignment, import, etc.),
+    # exec everything before it, then eval the tail — return its value
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        if len(tree.body) > 1:
+            setup = ast.Module(body=tree.body[:-1], type_ignores=[])
+            exec(compile(setup, '<devtools>', 'exec'), globs, namespaces)
+        expr = ast.Expression(body=tree.body[-1].value)
+        result = eval(compile(expr, '<devtools>', 'eval'), globs, namespaces)
         return {
-            'result': 'OK',
-            'type': 'NoneType',
-            'mode': 'exec',
+            'result': repr(result),
+            'type': type(result).__qualname__,
+            'mode': 'eval',
         }
+
+    # Pure statements — exec everything, return OK
+    exec(code, globs, namespaces)
+    return {
+        'result': 'OK',
+        'type': 'NoneType',
+        'mode': 'exec',
+    }
 
 
 def inspect_object(
