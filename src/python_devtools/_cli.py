@@ -318,7 +318,7 @@ def main():
         return _fmt(client.request('state'))
 
     @mcp.tool()
-    def screenshot() -> Image:
+    def screenshot():
         """Capture a screenshot of the running application's GUI.
 
         Returns the PNG image directly in context. Requires the app to have
