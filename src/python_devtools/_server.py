@@ -68,6 +68,7 @@ class _Server:
         self._port = port
         self._invoke_fn = invoke_fn
         self._readonly = readonly
+        self._screenshot_fn: Callable[[], bytes] | None = None
         self._sock: socket.socket | None = None
         self._running = False
 
@@ -204,6 +205,22 @@ class _Server:
             return 'pong'
         if method == 'version':
             return VERSION
+
+        # Screenshot — requires app-registered callback, runs on main thread
+        if method == 'screenshot':
+            if self._screenshot_fn is None:
+                raise RuntimeError(
+                    'Screenshot not available — app has not registered a screenshot callback. '
+                    'Call devtools.set_screenshot_fn(callback) in the app.'
+                )
+            import base64
+            png_bytes = self._run_in_app_context(self._screenshot_fn)
+            return {
+                'format': 'png',
+                'encoding': 'base64',
+                'size': len(png_bytes),
+                'data': base64.b64encode(png_bytes).decode('ascii'),
+            }
 
         # Resolve methods — run through app context for thread safety
         from python_devtools._resolve import (

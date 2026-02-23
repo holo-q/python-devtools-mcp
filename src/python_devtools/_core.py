@@ -35,6 +35,7 @@ class DevTools:
         self._namespaces: dict[str, object] = {}
         self._server: _Server | None = None
         self._invoke_fn: Callable | None = None
+        self._screenshot_fn: Callable[[], bytes] | None = None
 
     # ────────────────────────────────────────────────────────────────────
     # Registration
@@ -73,6 +74,27 @@ class DevTools:
         if self._server is not None:
             self._server._invoke_fn = callback
 
+    def set_screenshot_fn(self, callback: Callable[[], bytes] | None) -> None:
+        """
+        Register a callback that captures the app's current visual state as PNG bytes.
+
+        The callback must return PNG-encoded bytes. It will be invoked on the main
+        thread (via invoke_fn) so it has access to the framebuffer/GL context.
+
+        Without this, the screenshot MCP tool returns an error explaining the
+        capability isn't available.
+
+        Example (OpenGL app):
+            def capture():
+                w, h = glfw.get_framebuffer_size(window)
+                pixels = gl.glReadPixels(0, 0, w, h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)
+                # ... flip, encode PNG, return bytes
+            devtools.set_screenshot_fn(capture)
+        """
+        self._screenshot_fn = callback
+        if self._server is not None:
+            self._server._screenshot_fn = callback
+
     # ────────────────────────────────────────────────────────────────────
     # Server lifecycle
     # ────────────────────────────────────────────────────────────────────
@@ -91,6 +113,9 @@ class DevTools:
             invoke_fn=self._invoke_fn,
             readonly=readonly,
         )
+        # Propagate screenshot callback if already set before start()
+        if self._screenshot_fn is not None:
+            self._server._screenshot_fn = self._screenshot_fn
 
         # LOCAL_TRUSTED banner — make the security posture explicit
         log.warning('python-devtools: LOCAL_TRUSTED mode — eval/exec enabled, loopback-only, no auth')

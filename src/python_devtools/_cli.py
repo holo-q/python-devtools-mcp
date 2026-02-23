@@ -317,6 +317,25 @@ def main():
         return _fmt(client.request('state'))
 
     @mcp.tool()
+    def screenshot() -> str:
+        """Capture a screenshot of the running application's GUI.
+
+        Returns the file path to a PNG image. Use the Read tool to view it.
+        Requires the app to have registered a screenshot callback via
+        devtools.set_screenshot_fn().
+        """
+        import base64
+        import os
+        import tempfile
+        result = client.request('screenshot')
+        png_bytes = base64.b64decode(result['data'])
+        # Save to temp file — Claude Code's Read tool can view images natively
+        fd, path = tempfile.mkstemp(suffix='.png', prefix='devtools-screenshot-')
+        os.write(fd, png_bytes)
+        os.close(fd)
+        return f'{{"path": "{path}", "size": {len(png_bytes)}, "format": "png"}}'
+
+    @mcp.tool()
     def ping() -> str:
         """Check connection health to the devtools server."""
         return _fmt(client.request('ping'))

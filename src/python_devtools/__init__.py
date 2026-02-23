@@ -45,6 +45,11 @@ def set_main_thread_invoker(callback: Callable | None) -> None:
     _default.set_main_thread_invoker(callback)
 
 
+def set_screenshot_fn(callback: Callable[[], bytes] | None) -> None:
+    """Register a callback that captures the app's GUI as PNG bytes."""
+    _default.set_screenshot_fn(callback)
+
+
 def start(*, port: int = 9229, host: str = 'localhost', readonly: bool = False) -> None:
     """Start the devtools inspection server on the default instance."""
     _default.start(port=port, host=host, readonly=readonly)
@@ -71,6 +76,7 @@ __all__ = [
     'from_args',
     'register',
     'set_main_thread_invoker',
+    'set_screenshot_fn',
     'start',
     'stop',
 ]
