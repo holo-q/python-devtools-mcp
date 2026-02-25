@@ -50,6 +50,11 @@ def set_screenshot_fn(callback: Callable[[], bytes] | None) -> None:
     _default.set_screenshot_fn(callback)
 
 
+def set_winshot_fn(callback: Callable[[str], bytes] | None) -> None:
+    """Register a callback that renders code in an offscreen window and returns PNG bytes."""
+    _default.set_winshot_fn(callback)
+
+
 def start(*, port: int = 9229, host: str = 'localhost', readonly: bool = False) -> None:
     """Start the devtools inspection server on the default instance."""
     _default.start(port=port, host=host, readonly=readonly)
@@ -77,6 +82,7 @@ __all__ = [
     'register',
     'set_main_thread_invoker',
     'set_screenshot_fn',
+    'set_winshot_fn',
     'start',
     'stop',
 ]

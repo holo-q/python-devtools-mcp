@@ -15,13 +15,15 @@ Methods:
     repr(path)               — Quick type + repr at path
     call(path, args, kwargs) — Call a callable at path
     set(path, value_expr)    — Set attribute/item at path
+    screenshot()             — Capture current GUI state as PNG (app-dependent)
+    winshot(code)            — Render code in offscreen window, return PNG (app-dependent)
     ping()                   — Liveness check, returns 'pong'
     version()                — Returns server version string
 
 Protocol robustness:
     - Loopback-only: non-loopback peers are rejected immediately
     - Bounded recv buffer: clients exceeding 1MB are disconnected
-    - Readonly mode: eval/call/set methods can be disabled
+    - Readonly mode: eval/call/set/winshot methods can be disabled
 
 Threading safety:
     - invoke_fn callback routes resolve/eval onto the app's main thread
@@ -45,7 +47,7 @@ log = logging.getLogger('python-devtools')
 VERSION = 'python-devtools 0.2.0'
 
 # Methods that mutate app state — blocked in readonly mode
-_MUTATION_METHODS = frozenset({'eval', 'call', 'set'})
+_MUTATION_METHODS = frozenset({'eval', 'call', 'set', 'winshot'})
 
 # Maximum recv buffer before force-disconnect (1MB)
 _MAX_BUF = 1_000_000
@@ -69,6 +71,7 @@ class _Server:
         self._invoke_fn = invoke_fn
         self._readonly = readonly
         self._screenshot_fn: Callable[[], bytes] | None = None
+        self._winshot_fn: Callable[[str], bytes] | None = None
         self._sock: socket.socket | None = None
         self._running = False
 
@@ -215,6 +218,24 @@ class _Server:
                 )
             import base64
             png_bytes = self._run_in_app_context(self._screenshot_fn)
+            return {
+                'format': 'png',
+                'encoding': 'base64',
+                'size': len(png_bytes),
+                'data': base64.b64encode(png_bytes).decode('ascii'),
+            }
+
+        # Winshot — renders code in an offscreen window, returns PNG
+        if method == 'winshot':
+            if self._winshot_fn is None:
+                raise RuntimeError(
+                    'Winshot not available — app has not registered a winshot callback. '
+                    'Call devtools.set_winshot_fn(callback) in the app.'
+                )
+            import base64
+            code = params.get('code', '')
+            fn = self._winshot_fn
+            png_bytes = self._run_in_app_context(lambda: fn(code))
             return {
                 'format': 'png',
                 'encoding': 'base64',

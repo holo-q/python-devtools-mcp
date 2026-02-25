@@ -36,6 +36,7 @@ class DevTools:
         self._server: _Server | None = None
         self._invoke_fn: Callable | None = None
         self._screenshot_fn: Callable[[], bytes] | None = None
+        self._winshot_fn: Callable[[str], bytes] | None = None
 
     # ────────────────────────────────────────────────────────────────────
     # Registration
@@ -95,6 +96,30 @@ class DevTools:
         if self._server is not None:
             self._server._screenshot_fn = callback
 
+    def set_winshot_fn(self, callback: Callable[[str], bytes] | None) -> None:
+        """
+        Register a callback that renders code in an offscreen window and returns PNG bytes.
+
+        The callback signature: (code: str) -> bytes
+        It receives a code string, sets up an offscreen rendering context, executes the
+        code within it (e.g., imgui widget calls), captures the result, and returns
+        PNG-encoded bytes.
+
+        Without this, the winshot MCP tool returns an error explaining the
+        capability isn't available.
+
+        Example (imgui app):
+            def winshot(code: str) -> bytes:
+                # Set up offscreen GL context + imgui frame
+                # exec(code) within the frame
+                # Read framebuffer, encode as PNG, return bytes
+                ...
+            devtools.set_winshot_fn(winshot)
+        """
+        self._winshot_fn = callback
+        if self._server is not None:
+            self._server._winshot_fn = callback
+
     # ────────────────────────────────────────────────────────────────────
     # Server lifecycle
     # ────────────────────────────────────────────────────────────────────
@@ -113,9 +138,11 @@ class DevTools:
             invoke_fn=self._invoke_fn,
             readonly=readonly,
         )
-        # Propagate screenshot callback if already set before start()
+        # Propagate callbacks if already set before start()
         if self._screenshot_fn is not None:
             self._server._screenshot_fn = self._screenshot_fn
+        if self._winshot_fn is not None:
+            self._server._winshot_fn = self._winshot_fn
 
         # LOCAL_TRUSTED banner — make the security posture explicit
         log.warning('python-devtools: LOCAL_TRUSTED mode — eval/exec enabled, loopback-only, no auth')

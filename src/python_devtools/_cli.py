@@ -257,6 +257,30 @@ def main():
             """
             return _fmt(client.request('set', path=path, value_expr=value_expr))
 
+        @mcp.tool()
+        def winshot(code: str):
+            """Render UI code in an isolated offscreen window and return a screenshot.
+
+            Executes app-dependent code that builds and renders a window in memory,
+            then captures the result as a PNG image. Useful for UI testing and
+            visual verification without affecting the live application state.
+
+            The code runs inside the app's rendering scaffolding (e.g., imgui frame,
+            GL context). What you write depends on the app — for imgui apps, write
+            imgui widget calls directly.
+
+            Not all apps support this — requires the app to have registered a
+            winshot callback via devtools.set_winshot_fn().
+
+            Example (imgui app):
+                winshot("imgui.text('Hello')")
+                winshot("imgui.button('Click me')")
+            """
+            import base64
+            result = client.request('winshot', code=code)
+            png_bytes = base64.b64decode(result['data'])
+            return Image(data=png_bytes, format='png')
+
     # -- Read-only tools: always registered --
 
     @mcp.tool()
