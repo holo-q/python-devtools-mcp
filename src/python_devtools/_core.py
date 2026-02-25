@@ -101,20 +101,21 @@ class DevTools:
         Register a callback that renders code in an offscreen window and returns PNG bytes.
 
         The callback signature: (code: str) -> bytes
-        It receives a code string, sets up an offscreen rendering context, executes the
-        code within it (e.g., imgui widget calls), captures the result, and returns
-        PNG-encoded bytes.
+        It receives a code string, sets up an isolated offscreen rendering context,
+        executes the code within it (e.g., imgui widget calls), captures the rendered
+        output, and returns PNG-encoded bytes.
 
-        Without this, the winshot MCP tool returns an error explaining the
-        capability isn't available.
+        This enables the ``winshot`` MCP tool, which is the focused complement to
+        ``screenshot``: where screenshot captures the entire live app, winshot renders
+        *only* the code the agent passes — a single panel, a test widget, a specific
+        component in isolation. Not all apps can support this (it requires offscreen
+        rendering), so the tool gracefully errors if no callback is registered.
 
         Example (imgui app):
-            def winshot(code: str) -> bytes:
-                # Set up offscreen GL context + imgui frame
-                # exec(code) within the frame
-                # Read framebuffer, encode as PNG, return bytes
+            def render_winshot(code: str) -> bytes:
+                # Create FBO, start imgui frame, exec(code), render, readback PNG
                 ...
-            devtools.set_winshot_fn(winshot)
+            devtools.set_winshot_fn(render_winshot)
         """
         self._winshot_fn = callback
         if self._server is not None:

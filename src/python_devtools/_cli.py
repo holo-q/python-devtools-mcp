@@ -261,20 +261,29 @@ def main():
         def winshot(code: str):
             """Render UI code in an isolated offscreen window and return a screenshot.
 
-            Executes app-dependent code that builds and renders a window in memory,
-            then captures the result as a PNG image. Useful for UI testing and
-            visual verification without affecting the live application state.
+            Unlike screenshot() which captures the entire live app, winshot renders
+            ONLY your code in a clean 800x600 offscreen buffer — no surrounding UI,
+            no other windows, just the exact widget tree you specify. This is your
+            microscope for UI work:
 
-            The code runs inside the app's rendering scaffolding (e.g., imgui frame,
-            GL context). What you write depends on the app — for imgui apps, write
-            imgui widget calls directly.
+            - Debugging a specific panel: instantiate it and call its gui() method
+            - Testing new widget code before integrating it into the app
+            - Verifying visual fixes on one component without full-app noise
+            - Iterating on layout/styling with immediate visual feedback
+            - Cornering complex rendering bugs by isolating the offending code
+
+            The code runs inside an imgui frame with a fullscreen chromeless window.
+            Available in namespace: imgui, implot, dear (app instance), storage,
+            ImVec2, ImVec4.
 
             Not all apps support this — requires the app to have registered a
             winshot callback via devtools.set_winshot_fn().
 
-            Example (imgui app):
+            Examples:
                 winshot("imgui.text('Hello')")
                 winshot("imgui.button('Click me')")
+                # Render a specific panel class in isolation:
+                winshot("from src.gui.panels.status_panel import StatusPanel; StatusPanel(dear).gui()")
             """
             import base64
             result = client.request('winshot', code=code)
@@ -345,8 +354,17 @@ def main():
     def screenshot():
         """Capture a screenshot of the running application's GUI.
 
-        Returns the PNG image directly in context. Requires the app to have
-        registered a screenshot callback via devtools.set_screenshot_fn().
+        Returns the full application window as-is — every panel, every window,
+        the whole viewport in its current state. Use this for:
+        - Orienting yourself: "what does the app look like right now?"
+        - Verifying layout, docking, window arrangement after changes
+        - Checking overall visual coherence, theme, spacing
+        - Confirming that a change you made is visible in the live app
+
+        For focused work on a specific widget, panel, or component, prefer
+        winshot() — it renders just your code in isolation, no noise from the
+        rest of the UI, and you can instantiate any class or call any function
+        to render exactly the piece you're debugging.
         """
         import base64
         result = client.request('screenshot')
