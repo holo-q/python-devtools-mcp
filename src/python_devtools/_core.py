@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -10,6 +12,16 @@ if TYPE_CHECKING:
     from python_devtools._server import _Server
 
 log = logging.getLogger('python-devtools')
+
+
+def _default_app_id() -> str:
+    app_id = os.environ.get('DEVTOOLS_APP_ID') or os.environ.get('_DEVTOOLS_APP_ID')
+    if app_id:
+        return app_id
+    script_name = os.path.basename(sys.argv[0] or 'python')
+    stem, _ = os.path.splitext(script_name)
+    base = stem or 'python'
+    return f'{base}-{os.getpid()}'
 
 
 class DevTools:
@@ -125,17 +137,26 @@ class DevTools:
     # Server lifecycle
     # ────────────────────────────────────────────────────────────────────
 
-    def start(self, *, port: int = 9229, host: str = 'localhost', readonly: bool = False) -> None:
+    def start(
+        self,
+        *,
+        port: int = 0,
+        host: str = 'localhost',
+        readonly: bool = False,
+        app_id: str | None = None,
+    ) -> None:
         """Start the inspection server in a background thread."""
         if self._server is not None:
             log.warning('devtools: server already running')
             return
 
+        resolved_app_id = app_id or _default_app_id()
         from python_devtools._server import start_server
         self._server = start_server(
             self._namespaces,
             host=host,
             port=port,
+            app_id=resolved_app_id,
             invoke_fn=self._invoke_fn,
             readonly=readonly,
         )
@@ -149,7 +170,7 @@ class DevTools:
         log.warning('python-devtools: LOCAL_TRUSTED mode — eval/exec enabled, loopback-only, no auth')
         if readonly:
             log.warning('python-devtools: readonly mode — mutation tools disabled')
-        log.info(f'devtools: listening on {host}:{port}')
+        log.info(f'devtools: listening on {self._server.host}:{self._server.port} (app_id={self._server.app_id})')
 
     def stop(self) -> None:
         """Stop the inspection server."""
@@ -181,15 +202,25 @@ class DevTools:
     def last_command_time(self) -> float:
         return self._server.last_command_time if self._server else 0.0
 
+    @property
+    def app_id(self) -> str | None:
+        return self._server.app_id if self._server else None
+
     # ────────────────────────────────────────────────────────────────────
     # Argparse integration
     # ────────────────────────────────────────────────────────────────────
 
     def add_arguments(self, parser) -> None:
-        """Add --devtools, --devtools-port, --devtools-readonly to an argparse parser."""
+        """Add --devtools, --devtools-port, --devtools-app-id, --devtools-readonly."""
         group = parser.add_argument_group('DevTools')
         group.add_argument('--devtools', action='store_true', help='Enable runtime devtools server')
-        group.add_argument('--devtools-port', type=int, default=9229, help='DevTools port (default: 9229)')
+        group.add_argument(
+            '--devtools-port',
+            type=int,
+            default=0,
+            help='DevTools port (default: 0 for automatic free port)',
+        )
+        group.add_argument('--devtools-app-id', type=str, default=None, help='Stable app id used by MCP tools')
         group.add_argument('--devtools-readonly', action='store_true', help='Disable eval/call/set (read-only mode)')
 
     def from_args(self, args, **namespaces) -> None:
@@ -198,6 +229,7 @@ class DevTools:
             self.register(name, obj)
 
         if getattr(args, 'devtools', False):
-            port = getattr(args, 'devtools_port', 9229)
+            port = getattr(args, 'devtools_port', 0)
             readonly = getattr(args, 'devtools_readonly', False)
-            self.start(port=port, readonly=readonly)
+            app_id = getattr(args, 'devtools_app_id', None)
+            self.start(port=port, readonly=readonly, app_id=app_id)

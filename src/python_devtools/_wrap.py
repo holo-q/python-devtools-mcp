@@ -2,7 +2,7 @@
 Wrapper mode — inject devtools into a child Python process via sitecustomize.
 
 Usage:
-    python-devtools [--port PORT] [--readonly] -- <command>
+    python-devtools [--port PORT] [--app-id APP_ID] [--readonly] -- <command>
 
 Mechanism:
     Prepends a generated sitecustomize.py to PYTHONPATH. When the child
@@ -51,7 +51,8 @@ _SITECUSTOMIZE = textwrap.dedent("""\
     try:
         import python_devtools as _devtools
         _devtools.start(
-            port=int(_os.environ.get('_DEVTOOLS_PORT', '9229')),
+            port=int(_os.environ.get('_DEVTOOLS_PORT', '0')),
+            app_id=_os.environ.get('_DEVTOOLS_APP_ID'),
             readonly='_DEVTOOLS_READONLY' in _os.environ,
         )
         # __main__ is the module that will hold the user's script globals.
@@ -66,7 +67,20 @@ _SITECUSTOMIZE = textwrap.dedent("""\
 """)
 
 
-def wrap(command: list[str], *, port: int = 9229, readonly: bool = False) -> None:
+def _default_app_id(command: list[str]) -> str:
+    entry = os.path.basename(command[0]) if command else 'python'
+    stem, _ = os.path.splitext(entry)
+    base = stem or 'python'
+    return f'{base}-{os.getpid()}'
+
+
+def wrap(
+    command: list[str],
+    *,
+    port: int = 0,
+    app_id: str | None = None,
+    readonly: bool = False,
+) -> None:
     """Inject devtools into the child process and exec it. Does not return."""
     if not command:
         print('error: no command specified after --', file=sys.stderr)
@@ -91,12 +105,17 @@ def wrap(command: list[str], *, port: int = 9229, readonly: bool = False) -> Non
     env = os.environ.copy()
     env['PYTHONPATH'] = os.pathsep.join(parts)
     env['_DEVTOOLS_PORT'] = str(port)
+    env['_DEVTOOLS_APP_ID'] = app_id or _default_app_id(command)
     env['_DEVTOOLS_INJECT_DIR'] = inject_dir
     if readonly:
         env['_DEVTOOLS_READONLY'] = '1'
 
     mode = 'readonly' if readonly else 'read-write'
-    print(f'python-devtools: wrapping `{" ".join(command)}` — port {port}, {mode}', file=sys.stderr)
+    endpoint = str(port) if port else 'auto'
+    print(
+        f'python-devtools: wrapping `{" ".join(command)}` — app_id {env["_DEVTOOLS_APP_ID"]}, port {endpoint}, {mode}',
+        file=sys.stderr,
+    )
 
     # Replace this process with the child — signals, stdio, exit code all pass through
     os.execvpe(command[0], command, env)

@@ -10,10 +10,10 @@ Quick start:
 
     devtools.register('app', my_app)
     devtools.register('storage', storage)
-    devtools.start()  # Listens on port 9229
+    devtools.start(app_id='my-app')  # Auto-selects a free local port
 
 Argparse integration:
-    devtools.add_arguments(parser)   # Adds --devtools, --devtools-port, --devtools-readonly
+    devtools.add_arguments(parser)   # Adds --devtools, --devtools-port, --devtools-app-id, --devtools-readonly
     args = parser.parse_args()
     devtools.from_args(args, app=my_app, storage=storage)
 
@@ -22,7 +22,7 @@ Threading safety (GUI apps):
     devtools.start()
 
 Claude Code connects via the CLI bridge:
-    python-devtools --port 9229
+    python-devtools
 """
 
 from __future__ import annotations
@@ -55,13 +55,13 @@ def set_winshot_fn(callback: Callable[[str], bytes] | None) -> None:
     _default.set_winshot_fn(callback)
 
 
-def start(*, port: int = 9229, host: str = 'localhost', readonly: bool = False) -> None:
+def start(*, port: int = 0, host: str = 'localhost', readonly: bool = False, app_id: str | None = None) -> None:
     """Start the devtools inspection server on the default instance."""
-    _default.start(port=port, host=host, readonly=readonly)
+    _default.start(port=port, host=host, readonly=readonly, app_id=app_id)
 
 
 def add_arguments(parser) -> None:
-    """Add --devtools, --devtools-port, --devtools-readonly to an argparse parser."""
+    """Add --devtools, --devtools-port, --devtools-app-id, --devtools-readonly."""
     _default.add_arguments(parser)
 
 

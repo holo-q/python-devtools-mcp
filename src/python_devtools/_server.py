@@ -61,6 +61,7 @@ class _Server:
         namespaces: dict[str, object],
         host: str,
         port: int,
+        app_id: str,
         *,
         invoke_fn: Callable | None = None,
         readonly: bool = False,
@@ -68,12 +69,14 @@ class _Server:
         self._namespaces = namespaces
         self._host = host
         self._port = port
+        self._app_id = app_id
         self._invoke_fn = invoke_fn
         self._readonly = readonly
         self._screenshot_fn: Callable[[], bytes] | None = None
         self._winshot_fn: Callable[[str], bytes] | None = None
         self._sock: socket.socket | None = None
         self._running = False
+        self._registry_path: str | None = None
 
         # One-time warning for inline (no invoker) calls
         self._warned_inline = False
@@ -83,22 +86,47 @@ class _Server:
         self.n_commands: int = 0
         self.last_command_time: float = 0.0  # time.time() of last command
 
+    @property
+    def app_id(self) -> str:
+        return self._app_id
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    @property
+    def port(self) -> int:
+        return self._port
+
     def start(self) -> None:
+        from python_devtools._registry import register_app
+
         self._running = True
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self._host, self._port))
+        self._port = int(self._sock.getsockname()[1])
         self._sock.listen(4)
         self._sock.settimeout(1.0)  # So shutdown can break the accept loop
+        self._registry_path = register_app(
+            app_id=self._app_id,
+            host=self._host,
+            port=self._port,
+            readonly=self._readonly,
+        )
 
         thread = threading.Thread(target=self._accept_loop, daemon=True, name='devtools-server')
         thread.start()
 
     def shutdown(self) -> None:
+        from python_devtools._registry import unregister_app
+
         self._running = False
         if self._sock:
             self._sock.close()
             self._sock = None
+        unregister_app(self._registry_path)
+        self._registry_path = None
 
     # ────────────────────────────────────────────────────────────────
     # Threading safety — route calls through app's main thread
@@ -307,12 +335,13 @@ def _is_loopback(addr: str) -> bool:
 def start_server(
     namespaces: dict[str, object],
     host: str = 'localhost',
-    port: int = 9229,
+    port: int = 0,
+    app_id: str = 'app',
     *,
     invoke_fn: Callable | None = None,
     readonly: bool = False,
 ) -> _Server:
     """Create and start an inspection server. Returns the server instance."""
-    srv = _Server(namespaces, host, port, invoke_fn=invoke_fn, readonly=readonly)
+    srv = _Server(namespaces, host, port, app_id, invoke_fn=invoke_fn, readonly=readonly)
     srv.start()
     return srv

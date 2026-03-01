@@ -407,14 +407,12 @@ crypto = [
 name = "python-devtools"
 version = "0.2.0"
 source = { editable = "." }
-
-[package.optional-dependencies]
-cli = [
+dependencies = [
     { name = "mcp" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mcp", marker = "extra == 'cli'", specifier = ">=1.0" }]
+requires-dist = [{ name = "mcp", specifier = ">=1.0" }]
 provides-extras = ["cli"]
 
 [[package]]

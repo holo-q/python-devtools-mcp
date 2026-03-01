@@ -3,12 +3,12 @@ name = "python-devtools"
 version = "0.2.0"
 description = "Live runtime inspection for any Python app — MCP-powered devtools"
 requires-python = ">=3.12"
-# Base package has zero deps — pure stdlib TCP server embeds in your app
-dependencies = []
+# MCP is part of the default install so the bridge works out-of-the-box.
+dependencies = ["mcp>=1.0"]
 
 [project.optional-dependencies]
-# MCP CLI bridge (Claude Code / LLM agent connectivity)
-cli = ["mcp>=1.0"]
+# Backward-compatible no-op extra (historically used for MCP dependency).
+cli = []
 
 [project.scripts]
 python-devtools = "python_devtools._cli:main"
