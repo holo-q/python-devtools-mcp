@@ -27,10 +27,14 @@ from python_devtools._registry import list_registered_apps, unregister_app
 _MAX_BUF = 10 * 1024 * 1024
 
 
-def _fmt(result) -> str:
-    """Format result for MCP — compact JSON to avoid \\n noise in MCP protocol."""
+def _fmt(result):
+    """Normalize tool result for MCP transport.
+
+    Return structured objects directly so MCP clients can render them without
+    JSON-string escaping noise. Scalars are stringified for consistency.
+    """
     if isinstance(result, (dict, list)):
-        return json.dumps(result, default=str)
+        return result
     return str(result)
 
 
@@ -308,7 +312,7 @@ def main():
         return router.request(app_id=target_app_id, method=method, **params)
 
     @mcp.tool()
-    def running_apps() -> str:
+    def running_apps() -> Any:
         """List reachable running devtools apps discovered via registry (stale entries are pruned)."""
         return _fmt(router.running_apps())
 
@@ -316,17 +320,17 @@ def main():
     if not args.readonly:
 
         @mcp.tool()
-        def run(code: str, app_id: str | None = None) -> str:
+        def run(code: str, app_id: str | None = None) -> Any:
             """Evaluate or execute Python code in an already-running app's live namespace."""
             return _fmt(_request('eval', app_id=app_id, code=code))
 
         @mcp.tool()
-        def call(path: str, args: list | None = None, kwargs: dict | None = None, app_id: str | None = None) -> str:
+        def call(path: str, args: list | None = None, kwargs: dict | None = None, app_id: str | None = None) -> Any:
             """Call a callable at a dotted path in an already-running app."""
             return _fmt(_request('call', app_id=app_id, path=path, args=args, kwargs=kwargs))
 
         @mcp.tool()
-        def set_value(path: str, value_expr: str, app_id: str | None = None) -> str:
+        def set_value(path: str, value_expr: str, app_id: str | None = None) -> Any:
             """Set an attribute or item at a dotted path in an already-running app."""
             return _fmt(_request('set', app_id=app_id, path=path, value_expr=value_expr))
 
@@ -341,27 +345,27 @@ def main():
 
     # Read-only tools: always registered
     @mcp.tool()
-    def inspect(path: str, max_depth: int = 2, max_items: int = 50, app_id: str | None = None) -> str:
+    def inspect(path: str, max_depth: int = 2, max_items: int = 50, app_id: str | None = None) -> Any:
         """Inspect an object at a dotted path in an already-running app."""
         return _fmt(_request('inspect', app_id=app_id, path=path, max_depth=max_depth, max_items=max_items))
 
     @mcp.tool()
-    def list_path(path: str, max_items: int = 50, app_id: str | None = None) -> str:
+    def list_path(path: str, max_items: int = 50, app_id: str | None = None) -> Any:
         """List contents at a dotted path in an already-running app — attrs, keys, or items."""
         return _fmt(_request('list', app_id=app_id, path=path, max_items=max_items))
 
     @mcp.tool()
-    def repr_obj(path: str, app_id: str | None = None) -> str:
+    def repr_obj(path: str, app_id: str | None = None) -> Any:
         """Quick type + repr of an object at a dotted path in an already-running app."""
         return _fmt(_request('repr', app_id=app_id, path=path))
 
     @mcp.tool()
-    def source(path: str, app_id: str | None = None) -> str:
+    def source(path: str, app_id: str | None = None) -> Any:
         """Get source code of a function, class, or method from an already-running app."""
         return _fmt(_request('source', app_id=app_id, path=path))
 
     @mcp.tool()
-    def state(app_id: str | None = None) -> str:
+    def state(app_id: str | None = None) -> Any:
         """List all registered namespaces and their types for one already-running app."""
         return _fmt(_request('state', app_id=app_id))
 
@@ -375,7 +379,7 @@ def main():
         return Image(data=png_bytes, format='png')
 
     @mcp.tool()
-    def ping(app_id: str | None = None) -> str:
+    def ping(app_id: str | None = None) -> Any:
         """Ping one already-running app, or list running apps when app_id is omitted."""
         if app_id is None and args.app_id is None:
             return _fmt(router.running_apps())
