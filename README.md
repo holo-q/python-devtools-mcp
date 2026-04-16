@@ -107,7 +107,7 @@ Claude can now reach into your running app:
 → {type: AppConfig, attrs: [{name: debug, type: bool, repr: True}, ...]}
 
 > run("app.users[0].email", app_id="my-app")
-→ 'alice@example.com'
+→ alice@example.com
 
 > source("type(app.users[0]).validate", app_id="my-app")
 → def validate(self): ...
@@ -237,6 +237,11 @@ python-devtools --app-id myapp -- uv run myapp.py
 <td align="center">—</td>
 </tr>
 <tr>
+<td><code>logs</code></td>
+<td>Indexed log tail (default), paging (<code>before_id</code>), and follow mode (<code>after_id</code> + <code>wait_seconds</code>)</td>
+<td align="center">—</td>
+</tr>
+<tr>
 <td><code>ping</code></td>
 <td>Connection health check</td>
 <td align="center">—</td>
@@ -244,6 +249,18 @@ python-devtools --app-id myapp -- uv run myapp.py
 </table>
 
 Every tool accepts an optional <code>app_id</code> argument. If no default app ID is set on the bridge and the supplied app ID is not found, the bridge pings known endpoints, prunes stale records, and returns the running apps list.
+
+`run` also accepts optional `<code>max_result_chars</code>` and `<code>max_result_lines</code>` limits (defaults: `0` / `0`, meaning no truncation). Set either value to `> 0` to compact very large text outputs for model readability.
+
+### Debugging Pattern (Timeline First)
+
+For agent-assisted debugging, prefer logs over brute-force state probing:
+
+1. Take a tail snapshot: `logs(limit=200, app_id="my-app")`
+2. Reproduce the issue and follow new lines: `logs(after_id=<last_id>, wait_seconds=5, app_id="my-app")`
+3. Page older context when needed: `logs(before_id=<first_id>, limit=200, app_id="my-app")`
+
+Log results include stable `id` indices so agents can move backward/forward deterministically.
 
 ## Argparse Integration
 

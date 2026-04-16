@@ -19,6 +19,7 @@ Methods:
     winshot(code)            — Render code in offscreen window, return PNG (app-dependent)
     ping()                   — Liveness check, returns 'pong'
     version()                — Returns server version string
+    logs(...)                — Indexed log tail/pagination/follow for debugging
 
 Protocol robustness:
     - Loopback-only: non-loopback peers are rejected immediately
@@ -39,6 +40,8 @@ import logging
 import socket
 import threading
 import time
+import traceback
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
@@ -51,6 +54,151 @@ _MUTATION_METHODS = frozenset({'eval', 'call', 'set', 'winshot'})
 
 # Maximum recv buffer before force-disconnect (1MB)
 _MAX_BUF = 1_000_000
+
+# Log history retained for MCP log queries
+_MAX_LOG_ENTRIES = 5_000
+
+# Upper bound for blocking log follow calls
+_MAX_LOG_WAIT_SECONDS = 30.0
+
+
+def _parse_level(level: str | None) -> int:
+    """Parse a logging level string; defaults to NOTSET for unknown input."""
+    if level is None:
+        return logging.NOTSET
+    if isinstance(level, str):
+        parsed = logging.getLevelName(level.upper())
+        if isinstance(parsed, int):
+            return parsed
+    return logging.NOTSET
+
+
+class _LogBuffer:
+    """Thread-safe indexed log buffer with tail/pagination semantics."""
+
+    def __init__(self, max_entries: int = _MAX_LOG_ENTRIES):
+        self._entries: deque[dict[str, Any]] = deque(maxlen=max_entries)
+        self._next_id = 1
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+
+    def append(self, record: logging.LogRecord) -> None:
+        """Append one log record with a monotonic id."""
+        message = record.getMessage()
+        if record.exc_info:
+            message += '\n' + ''.join(traceback.format_exception(*record.exc_info)).rstrip()
+        if record.stack_info:
+            message += '\n' + str(record.stack_info)
+
+        with self._cv:
+            entry_id = self._next_id
+            self._next_id += 1
+            self._entries.append(
+                {
+                    'id': entry_id,
+                    'ts': float(record.created),
+                    'level': record.levelname,
+                    'logger': record.name,
+                    'message': message,
+                }
+            )
+            self._cv.notify_all()
+
+    def wait_for_new(self, after_id: int, wait_seconds: float) -> None:
+        """Block until there is any entry with id > after_id, or timeout."""
+        timeout = max(0.0, min(float(wait_seconds), _MAX_LOG_WAIT_SECONDS))
+        if timeout <= 0.0:
+            return
+
+        with self._cv:
+            deadline = time.monotonic() + timeout
+            while self._next_id - 1 <= after_id:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._cv.wait(remaining)
+
+    def query(
+        self,
+        *,
+        after_id: int = 0,
+        before_id: int | None = None,
+        limit: int = 200,
+        level: str | None = None,
+        logger_name: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Query logs with indexed pagination.
+
+        Defaults to tail mode (latest `limit` entries). Use:
+          - `after_id` for forward reads/follow
+          - `before_id` for older/backward reads
+        """
+        min_level = _parse_level(level)
+        max_items = max(1, min(int(limit), 500))
+        logger_filter = (logger_name or '').strip()
+
+        with self._lock:
+            entries = list(self._entries)
+
+        filtered = [
+            e for e in entries
+            if (min_level <= _parse_level(str(e['level'])))
+            and (not logger_filter or logger_filter in str(e['logger']))
+        ]
+
+        window = filtered
+        if before_id is not None:
+            window = [e for e in window if int(e['id']) < int(before_id)]
+            selected = window[-max_items:]
+        elif after_id > 0:
+            window = [e for e in window if int(e['id']) > int(after_id)]
+            selected = window[:max_items]
+        else:
+            selected = window[-max_items:]
+
+        if selected:
+            first_id = int(selected[0]['id'])
+            last_id = int(selected[-1]['id'])
+            has_older = bool(window and int(window[0]['id']) < first_id)
+            has_newer = bool(window and int(window[-1]['id']) > last_id)
+            next_before_id = first_id
+            next_after_id = last_id
+        else:
+            has_older = False
+            has_newer = False
+            next_before_id = before_id
+            next_after_id = max(0, int(after_id))
+
+        return {
+            'entries': selected,
+            'count': len(selected),
+            'first_id': next_before_id if selected else None,
+            'last_id': next_after_id if selected else None,
+            'has_older': has_older,
+            'has_newer': has_newer,
+            'next_before_id': next_before_id,
+            'next_after_id': next_after_id,
+            'tip': (
+                'Use logs(before_id=next_before_id) for older context, '
+                'or logs(after_id=next_after_id, wait_seconds=5) to follow while reproducing.'
+            ),
+        }
+
+
+class _LogCaptureHandler(logging.Handler):
+    """Forwards all Python logging records into the devtools log buffer."""
+
+    def __init__(self, sink: _LogBuffer):
+        super().__init__(level=logging.NOTSET)
+        self._sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._sink.append(record)
+        except Exception:
+            # Never let logging failures crash user apps.
+            pass
 
 
 class _Server:
@@ -77,6 +225,8 @@ class _Server:
         self._sock: socket.socket | None = None
         self._running = False
         self._registry_path: str | None = None
+        self._log_buffer = _LogBuffer()
+        self._log_handler: _LogCaptureHandler | None = None
 
         # One-time warning for inline (no invoker) calls
         self._warned_inline = False
@@ -102,6 +252,10 @@ class _Server:
         from python_devtools._registry import register_app
 
         self._running = True
+        root_logger = logging.getLogger()
+        self._log_handler = _LogCaptureHandler(self._log_buffer)
+        root_logger.addHandler(self._log_handler)
+
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self._host, self._port))
@@ -122,6 +276,9 @@ class _Server:
         from python_devtools._registry import unregister_app
 
         self._running = False
+        if self._log_handler is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler = None
         if self._sock:
             self._sock.close()
             self._sock = None
@@ -236,6 +393,26 @@ class _Server:
             return 'pong'
         if method == 'version':
             return VERSION
+        if method == 'logs':
+            after_id = int(params.get('after_id', 0) or 0)
+            before_raw = params.get('before_id')
+            before_id = int(before_raw) if before_raw is not None else None
+            limit = int(params.get('limit', 200) or 200)
+            level = params.get('level')
+            logger_name = params.get('logger')
+            wait_seconds = float(params.get('wait_seconds', 0.0) or 0.0)
+
+            # Follow mode: wait for new logs after the cursor (primarily for user test runs).
+            if before_id is None and wait_seconds > 0:
+                self._log_buffer.wait_for_new(after_id=after_id, wait_seconds=wait_seconds)
+
+            return self._log_buffer.query(
+                after_id=after_id,
+                before_id=before_id,
+                limit=limit,
+                level=level,
+                logger_name=logger_name,
+            )
 
         # Screenshot — requires app-registered callback, runs on main thread
         if method == 'screenshot':
@@ -286,7 +463,12 @@ class _Server:
         ns = self._namespaces
         match method:
             case 'eval':
-                return self._run_in_app_context(lambda: run_code(params['code'], ns))
+                return self._run_in_app_context(lambda: run_code(
+                    params['code'],
+                    ns,
+                    max_result_chars=int(params.get('max_result_chars', 0) or 0),
+                    max_result_lines=int(params.get('max_result_lines', 0) or 0),
+                ))
             case 'inspect':
                 return self._run_in_app_context(lambda: inspect_object(
                     params['path'], ns,

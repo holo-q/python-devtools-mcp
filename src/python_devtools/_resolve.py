@@ -8,6 +8,7 @@ import inspect
 import io
 import re
 import types
+from collections import Counter
 from collections.abc import Mapping, Sequence, Set
 
 
@@ -27,7 +28,131 @@ def resolve(path: str, namespaces: dict[str, object]) -> object:
 # Public resolvers — all return structured dicts
 # ────────────────────────────────────────────────────────────────────────
 
-def run_code(code: str, namespaces: dict[str, object]) -> dict:
+_PREVIEW_HEAD_LINES = 16
+_PREVIEW_TAIL_LINES = 8
+_PREVIEW_LINE_MAXLEN = 240
+_TOP_PATTERN_LIMIT = 8
+_TIMESTAMP_PREFIX_RE = re.compile(r'^\[\d+(?:\.\d+)?\]\s*')
+_NUMBER_RE = re.compile(r'-?\d+(?:\.\d+)?')
+_SPACE_RE = re.compile(r'\s+')
+
+
+def _clip_preview_line(line: str, *, maxlen: int = _PREVIEW_LINE_MAXLEN) -> str:
+    """Bound one preview line to keep summaries compact."""
+    if len(line) <= maxlen:
+        return line
+    return line[: maxlen - 3] + '...'
+
+
+def _normalize_pattern_line(line: str) -> str:
+    """
+    Normalize noisy lines (timestamps/numbers/spacing) so repeated shapes collapse.
+
+    This keeps semantic structure while removing frame-to-frame numeric jitter.
+    """
+    s = _TIMESTAMP_PREFIX_RE.sub('', line)
+    s = _NUMBER_RE.sub('#', s)
+    s = _SPACE_RE.sub(' ', s).strip()
+    return _clip_preview_line(s, maxlen=160)
+
+
+def _compact_text(
+    text: str,
+    *,
+    label: str,
+    max_result_chars: int,
+    max_result_lines: int,
+) -> tuple[str, dict[str, object] | None]:
+    """
+    Return text directly when small; otherwise return a bounded preview + summary.
+
+    The summary is optimized for model consumption: compact stats + repeated patterns.
+    """
+    line_count = text.count('\n') + (1 if text else 0)
+    over_chars = max_result_chars > 0 and len(text) > max_result_chars
+    over_lines = max_result_lines > 0 and line_count > max_result_lines
+
+    if not over_chars and not over_lines:
+        return text, None
+
+    lines = text.splitlines() or ['']
+    head_lines = [_clip_preview_line(line) for line in lines[:_PREVIEW_HEAD_LINES]]
+    tail_lines: list[str] = []
+    if len(lines) > (_PREVIEW_HEAD_LINES + _PREVIEW_TAIL_LINES):
+        tail_lines = [_clip_preview_line(line) for line in lines[-_PREVIEW_TAIL_LINES:]]
+
+    pattern_counts = Counter(_normalize_pattern_line(line) for line in lines if line.strip())
+    top_patterns = [
+        {'pattern': pattern, 'count': count}
+        for pattern, count in pattern_counts.most_common(_TOP_PATTERN_LIMIT)
+        if count > 1
+    ]
+
+    summary: dict[str, object] = {
+        'kind': 'text',
+        'label': label,
+        'chars': len(text),
+        'lines': line_count,
+        'truncated': True,
+        'max_result_chars': max_result_chars,
+        'max_result_lines': max_result_lines,
+        'head_lines': len(head_lines),
+        'tail_lines': len(tail_lines),
+    }
+    if top_patterns:
+        summary['top_patterns'] = top_patterns
+
+    preview: list[str] = [
+        f'<{label} truncated: {line_count} lines, {len(text)} chars>',
+        '[head]',
+    ]
+    preview.extend(head_lines)
+    if tail_lines:
+        preview.append('[tail]')
+        preview.extend(tail_lines)
+
+    return '\n'.join(preview), summary
+
+
+def _render_result_value(
+    value: object,
+    *,
+    label: str,
+    max_result_chars: int,
+    max_result_lines: int,
+) -> tuple[str, dict[str, object] | None]:
+    """
+    Render result/stdout for transport with optional compaction metadata.
+
+    Strings are transported as plain text (not repr) to avoid escape-noise.
+    Other values use repr for readability.
+    """
+    if isinstance(value, str):
+        return _compact_text(
+            value,
+            label=label,
+            max_result_chars=max_result_chars,
+            max_result_lines=max_result_lines,
+        )
+    try:
+        rendered = repr(value)
+    except Exception as e:
+        rendered = f'<repr error: {e}>'
+    return _compact_text(
+        rendered,
+        label=label,
+        max_result_chars=max_result_chars,
+        max_result_lines=max_result_lines,
+    )
+
+
+def run_code(
+    code: str,
+    namespaces: dict[str, object],
+    *,
+    max_result_chars: int = 0,
+    max_result_lines: int = 0,
+) -> dict:
     """
     Evaluate expression or execute statement(s). Returns structured result.
 
@@ -44,6 +169,10 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
     This captures print() output and — critically — prevents help() from
     opening an interactive pager (StringIO.isatty() → False → no pager).
     Captured output is included in the result dict as 'stdout'.
+
+    Result compaction:
+        Set max_result_chars/max_result_lines > 0 to cap very large textual
+        outputs. The response includes compact preview text plus summary stats.
     """
     # Merged namespace: registered objects + builtins in one dict.
     # Copy so we don't pollute the registered namespaces with temporaries.
@@ -52,13 +181,29 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
 
     def _result(result: object, mode: str) -> dict:
         out = capture.getvalue()
+        rendered_result, result_summary = _render_result_value(
+            result,
+            label='result',
+            max_result_chars=max_result_chars,
+            max_result_lines=max_result_lines,
+        )
         d: dict = {
-            'result': repr(result),
+            'result': rendered_result,
             'type': type(result).__qualname__,
             'mode': mode,
         }
+        if result_summary is not None:
+            d['result_summary'] = result_summary
         if out:
-            d['stdout'] = out
+            rendered_stdout, stdout_summary = _render_result_value(
+                out,
+                label='stdout',
+                max_result_chars=max_result_chars,
+                max_result_lines=max_result_lines,
+            )
+            d['stdout'] = rendered_stdout
+            if stdout_summary is not None:
+                d['stdout_summary'] = stdout_summary
         return d
 
     with contextlib.redirect_stdout(capture):
@@ -91,7 +236,15 @@ def run_code(code: str, namespaces: dict[str, object]) -> dict:
     out = capture.getvalue()
     d: dict = {'result': 'OK', 'type': 'NoneType', 'mode': 'exec'}
     if out:
-        d['stdout'] = out
+        rendered_stdout, stdout_summary = _render_result_value(
+            out,
+            label='stdout',
+            max_result_chars=max_result_chars,
+            max_result_lines=max_result_lines,
+        )
+        d['stdout'] = rendered_stdout
+        if stdout_summary is not None:
+            d['stdout_summary'] = stdout_summary
     return d
 
 
