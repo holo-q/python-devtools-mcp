@@ -5,4 +5,5 @@ dist/
 build/
 .ruff_cache/
 .idea
-.codex
+.codex/*
+!.codex/config.toml

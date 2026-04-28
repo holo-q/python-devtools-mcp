@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "python-devtools": {
+      "type": "stdio",
+      "command": "python-devtools"
+    }
+  }
+}

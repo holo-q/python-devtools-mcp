@@ -1,0 +1,14 @@
+{
+  "name": "python-devtools",
+  "owner": {
+    "name": "holo-q",
+    "url": "https://github.com/holo-q"
+  },
+  "plugins": [
+    {
+      "name": "python-devtools",
+      "source": ".",
+      "description": "MCP bridge to live Python processes — eval, inspect, source, logs, screenshots."
+    }
+  ]
+}

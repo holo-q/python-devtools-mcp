@@ -65,9 +65,18 @@ devtools.start(app_id='my-app')  # localhost:<auto free port>
 
 Three lines. Your app now speaks devtools.
 
-### 2. Connect Claude Code
+### 2. Connect your agent
 
-Add to your `.claude/settings.json`:
+The bridge connects to already-running apps only — it never launches your program.
+
+**Claude Code** — install as a plugin (preferred, MCP applies globally once enabled):
+
+```
+/plugin marketplace add holo-q/python-devtools-mcp
+/plugin install python-devtools@python-devtools
+```
+
+Or the manual route — add to your `.claude/settings.json`:
 
 ```json
 {
@@ -79,9 +88,15 @@ Add to your `.claude/settings.json`:
 }
 ```
 
-The bridge connects to already-running apps only. It does not launch your program.
+**Codex CLI** — one-shot global registration:
 
-If you prefer `uv`-managed execution and want to guarantee the MCP SDK is present, use:
+```bash
+codex mcp add python-devtools -- python-devtools
+```
+
+This writes the `[mcp_servers.python-devtools]` block into `~/.codex/config.toml`. Alternatively, the repo ships a `.codex/config.toml` for project-scoped use (active once you trust the project).
+
+If you prefer `uv`-managed execution and want to guarantee the MCP SDK is present:
 
 ```json
 {
@@ -134,7 +149,10 @@ Don't want to modify your app's source? Wrap it:
 python-devtools --app-id myapp -- uv run myapp.py
 python-devtools --app-id flask-dev -- flask run
 python-devtools --app-id worker --port 9230 -- python worker.py
+python-devtools --readonly -- python myapp.py        # locks down mutation tools
 ```
+
+If `--app-id` is omitted, the wrapper synthesizes one from the entry script and pid (e.g. `myapp-12345`) so multiple instances of the same script don't collide in the registry.
 
 This injects a devtools server into the child process via `sitecustomize.py` — **no code changes needed**. The child gets a TCP server on startup, and `__main__` is auto-registered as `main`:
 
@@ -242,15 +260,27 @@ python-devtools --app-id myapp -- uv run myapp.py
 <td align="center">—</td>
 </tr>
 <tr>
+<td><code>screenshot</code></td>
+<td>Capture the live app's GUI as a PNG (requires <code>set_screenshot_fn</code>)</td>
+<td align="center">—</td>
+</tr>
+<tr>
+<td><code>winshot</code></td>
+<td>Render a code snippet in an isolated offscreen window and return a PNG (requires <code>set_winshot_fn</code>)</td>
+<td align="center">yes</td>
+</tr>
+<tr>
 <td><code>ping</code></td>
-<td>Connection health check</td>
+<td>Connection health check (returns running apps when <code>app_id</code> is omitted)</td>
 <td align="center">—</td>
 </tr>
 </table>
 
 Every tool accepts an optional <code>app_id</code> argument. If no default app ID is set on the bridge and the supplied app ID is not found, the bridge pings known endpoints, prunes stale records, and returns the running apps list.
 
-`run` also accepts optional `<code>max_result_chars</code>` and `<code>max_result_lines</code>` limits (defaults: `0` / `0`, meaning no truncation). Set either value to `> 0` to compact very large text outputs for model readability.
+`run` also accepts optional <code>max_result_chars</code> and <code>max_result_lines</code> limits (defaults: `0` / `0`, meaning no truncation). Set either value to `> 0` to compact very large text outputs for model readability — the response carries a `head`/`tail` preview and a `top_patterns` summary so models can still reason about long log spew.
+
+Mutation tools (`run`, `call`, `set_value`, `winshot`) attach a `devtools_warning` field if the target app's pid/port changes immediately after the call — surfacing crashes or restarts that would otherwise look like silent successes.
 
 ### Debugging Pattern (Timeline First)
 
@@ -312,6 +342,28 @@ while running:
 
 Without an invoker, calls run inline on the TCP handler thread (a one-time warning is emitted).
 
+## GUI Capture (screenshot / winshot)
+
+Two optional callbacks expose visual state to the agent. Both run through the main-thread invoker, so they have access to the app's framebuffer / GL context.
+
+```python
+def capture() -> bytes:
+    """Capture current visual state as PNG bytes."""
+    ...
+
+def render_winshot(code: str) -> bytes:
+    """Render `code` into an isolated offscreen window, return PNG bytes."""
+    ...
+
+devtools.set_screenshot_fn(capture)        # enables the `screenshot` MCP tool
+devtools.set_winshot_fn(render_winshot)    # enables the `winshot` MCP tool
+```
+
+- `screenshot` captures the *whole live app* — useful for "what does the user actually see right now".
+- `winshot` captures *only the code the agent passes* (a single panel, a test widget, a component in isolation) — useful for verifying UI changes without spinning up the full app state.
+
+Both tools cleanly error out with an actionable message if the app hasn't registered the corresponding callback. The bridge converts the returned PNG bytes into an `Image` MCP payload so Claude Code renders it inline.
+
 ## Readonly Mode
 
 Lock down mutation tools for safer inspection:
@@ -331,7 +383,36 @@ devtools.start(readonly=True)
 }
 ```
 
-In readonly mode, `run`, `call`, and `set_value` are not registered — only inspection tools are available.
+In readonly mode, `run`, `call`, `set_value`, and `winshot` are not registered — only inspection and `screenshot` are available. The server also enforces this at the protocol layer, so a stale read-write bridge against a readonly app still gets rejected.
+
+## Plugin / Extension Layout
+
+This repo doubles as a **Claude Code plugin** and a **Codex CLI project-scoped extension**. The relevant files:
+
+```
+.claude-plugin/
+├── plugin.json          # Claude Code plugin manifest
+└── marketplace.json     # Lets the repo serve itself as a single-plugin marketplace
+.mcp.json                # MCP server registration consumed by Claude Code on plugin enable
+.codex/
+└── config.toml          # Codex CLI project-scoped MCP registration (loads on trust)
+AGENTS.md                # Auto-loaded by Codex; agent-facing usage doc for python-devtools
+```
+
+**Claude Code install flow** — plugin enable wires the MCP server globally (every Claude Code session, not just inside this repo):
+
+```
+/plugin marketplace add holo-q/python-devtools-mcp
+/plugin install python-devtools@python-devtools
+```
+
+**Codex CLI install flow** — Codex has no plugin system, only config files. Cleanest path:
+
+```bash
+codex mcp add python-devtools -- python-devtools     # writes ~/.codex/config.toml globally
+```
+
+For project scope only, run `codex` inside this repo and accept the trust prompt — `.codex/config.toml` is then honored automatically.
 
 ## Security
 
@@ -365,17 +446,27 @@ devtools.last_command_time  # float — time.time() of last command
 
 ```
 python-devtools/
-├── __init__.py      # Module API — register, start, stop
-├── _core.py         # DevTools orchestrator — lifecycle, argparse
-├── _registry.py     # Local app registry for app-id routing
-├── _server.py       # TCP JSON-lines server — accept, dispatch, threading
-├── _resolve.py      # Object resolution — inspect, eval, serialize
-├── _cli.py          # MCP stdio bridge + wrapper dispatch
-└── _wrap.py         # Wrapper mode — sitecustomize.py injection
+├── __init__.py      # Module API — register, start, stop, set_*_fn, add_arguments, from_args
+├── _core.py         # DevTools orchestrator — lifecycle, argparse, callback registration
+├── _registry.py     # Local app registry (XDG cache) — app_id → host/port/pid lookup
+├── _server.py       # TCP JSON-lines server — accept loop, dispatch, log capture, loopback guard
+├── _resolve.py      # Object resolution — eval/exec, inspect, serialize, compaction
+├── _cli.py          # MCP stdio bridge — app-id router, mutation pid/port watchdog
+└── _wrap.py         # Wrapper mode — sitecustomize.py injection via PYTHONPATH
 ```
 
-The app runtime server (`__init__`, `_core`, `_server`, `_resolve`) is implemented with stdlib modules.
-The MCP bridge (`_cli`) uses the bundled `mcp` dependency from the base package install.
+The app runtime server (`__init__`, `_core`, `_server`, `_resolve`, `_registry`) is pure stdlib — zero deps in your app's process.
+The MCP bridge (`_cli`) uses the bundled `mcp` dependency, which ships in the base install (no extras to remember).
+
+### Wire-level summary
+
+```
+agent ──► MCP stdio ──► _cli (bridge) ──► TCP JSON-lines ──► _server ──► _resolve ──► your objects
+                            │                                   │
+                            └─ registry (~/.cache/python-devtools/registry/*.json) ──┘
+```
+
+Each `devtools.start()` writes `{app_id, host, port, pid, readonly}` to the registry; the bridge resolves the agent's `app_id` to the freshest live entry, prunes dead ones via `ping`, and reuses TCP clients per endpoint.
 
 ---
 

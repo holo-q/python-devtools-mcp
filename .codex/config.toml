@@ -1,0 +1,21 @@
+# Codex CLI project-scoped config for python-devtools.
+#
+# Codex CLI loads .codex/config.toml from the project root *only when the project
+# is trusted* (Codex prompts to trust on first run). Higher-precedence than
+# ~/.codex/config.toml; lower than CLI flags / profile.
+#
+# To install python-devtools as an MCP server *globally* in Codex (recommended
+# for cross-project use), run:
+#
+#     codex mcp add python-devtools -- python-devtools
+#
+# That writes the equivalent block into ~/.codex/config.toml. This file exists
+# so that cloning the repo + trusting it is enough to get the bridge wired up
+# without touching the global config.
+
+[mcp_servers.python-devtools]
+command = "python-devtools"
+# args = ["--app-id", "myapp"]                # uncomment to pin a default app_id
+# args = ["--readonly"]                       # uncomment to disable mutation tools
+# startup_timeout_sec = 10
+# tool_timeout_sec = 60
