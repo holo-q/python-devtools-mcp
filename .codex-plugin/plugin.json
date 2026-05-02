@@ -1,0 +1,28 @@
+{
+  "name": "python-devtools",
+  "version": "0.2.0",
+  "description": "Live runtime inspection for any Python app — MCP bridge that lets Codex reach into a running Python process to eval expressions, inspect objects, read source, follow logs, and capture screenshots.",
+  "author": {
+    "name": "holo-q"
+  },
+  "homepage": "https://github.com/holo-q/python-devtools-mcp",
+  "repository": "https://github.com/holo-q/python-devtools-mcp.git",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "python",
+    "devtools",
+    "debugging",
+    "introspection",
+    "live-eval",
+    "trace-driven-development"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Python Devtools",
+    "shortDescription": "Live runtime inspection for any Python app",
+    "longDescription": "MCP bridge that lets Codex reach into a running Python process to eval expressions, inspect objects, read source, follow logs, and capture screenshots. Pair with trace-driven development for fast iteration on long-running services.",
+    "developerName": "holo-q",
+    "category": "Coding"
+  }
+}
