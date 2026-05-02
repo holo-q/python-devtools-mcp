@@ -2,7 +2,8 @@
   "mcpServers": {
     "python-devtools": {
       "type": "stdio",
-      "command": "python-devtools"
+      "command": "uvx",
+      "args": ["--refresh", "--from", "git+https://github.com/holo-q/python-devtools-mcp", "python-devtools"]
     }
   }
 }
