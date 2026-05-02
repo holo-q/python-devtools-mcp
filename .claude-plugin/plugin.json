@@ -6,10 +6,7 @@
     "name": "holo-q"
   },
   "homepage": "https://github.com/holo-q/python-devtools-mcp",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/holo-q/python-devtools-mcp.git"
-  },
+  "repository": "https://github.com/holo-q/python-devtools-mcp.git",
   "license": "MIT",
   "keywords": [
     "mcp",
